@@ -31,9 +31,6 @@ build/
 
 ### VS Code ###
 .vscode/
-
-.git
-.github
 .idea
 .vscode
 target
