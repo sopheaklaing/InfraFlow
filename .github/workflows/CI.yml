@@ -94,9 +94,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: infraflow-image
+          path: .
 
       - name: Load Docker image
-        run: docker load -i infraflow.tar
+        run: |
+          docker load -i infraflow.tar
+
+      - name: Verify Docker image
+        run: |
+          docker images
+          docker image inspect infraflow:latest
 
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@master
