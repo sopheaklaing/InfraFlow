@@ -53,3 +53,25 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           exit-code: "1"
+
+    # ========================================
+  # 3. BUILD DOCKER IMAGE
+  # ========================================
+  build-image:
+    runs-on: ubuntu-latest
+    needs: security-scan-source
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t infraflow:${{ steps.meta.outputs.tag }} \
+            -t infraflow:latest \
+            .
