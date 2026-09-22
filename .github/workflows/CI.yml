@@ -1,3 +1,4 @@
+
 name: CI/CD
 
 on:
@@ -27,6 +28,7 @@ jobs:
       - name: Run tests
         run: ./mvnw test -B
 
+
   security-scan-source:
     runs-on: ubuntu-latest
     needs: test
@@ -53,7 +55,8 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           exit-code: "1"
-  # build image
+
+
   build-image:
     runs-on: ubuntu-latest
     needs: security-scan-source
@@ -86,7 +89,8 @@ jobs:
           name: infraflow-image
           path: infraflow.tar
           retention-days: 1
-  # scan image by trivy
+
+
   image-scan:
     runs-on: ubuntu-latest
     needs: build-image
@@ -114,7 +118,7 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
 
-   # push image to GHCR 
+
   push-image:
     runs-on: ubuntu-latest
     needs: [build-image, image-scan]
@@ -151,7 +155,7 @@ jobs:
           docker push \
             ghcr.io/${{ github.repository_owner }}/infraflow:${{ needs.build-image.outputs.image_tag }}
 
-  # 6. TEST VPS SSH
+
   deploy:
     runs-on: ubuntu-latest
     needs: [build-image, push-image]
@@ -166,15 +170,91 @@ jobs:
           script: |
             cd ~/apps/infraflow
 
-            export APP_TAG=${{ needs.build-image.outputs.image_tag }}
+            NEW_TAG=${{ needs.build-image.outputs.image_tag }}
+            IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/infraflow
 
-            docker pull ghcr.io/${{ github.repository_owner }}/infraflow:${APP_TAG}
+            echo "======================================"
+            echo "New version: ${NEW_TAG}"
+            echo "======================================"
 
+            # Get currently running version
+            OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' infraflow)
+            OLD_TAG=${OLD_IMAGE##*:}
+
+            echo "Current version: ${OLD_TAG}"
+
+            # Pull new image
+            echo "Pulling new image..."
+            docker pull ${IMAGE_NAME}:${NEW_TAG}
+
+            # Deploy new version
+            echo "Deploying ${NEW_TAG}..."
+            export APP_TAG=${NEW_TAG}
             docker compose up -d
+
+            echo "Waiting for application to become healthy..."
+
+            HEALTHY=false
+
+            for i in {1..30}; do
+              if curl --fail --silent http://localhost:8080/actuator/health; then
+                echo
+                echo "Application is healthy!"
+                HEALTHY=true
+                break
+              fi
+
+              echo "Health check failed. Retry $i/30..."
+              sleep 2
+            done
+
+            # New version failed → rollback
+            if [ "$HEALTHY" != "true" ]; then
+
+              echo "======================================"
+              echo "DEPLOYMENT FAILED"
+              echo "Rolling back to ${OLD_TAG}..."
+              echo "======================================"
+
+              export APP_TAG=${OLD_TAG}
+              docker compose up -d
+
+              echo "Waiting for rollback application..."
+
+              ROLLBACK_HEALTHY=false
+
+              for i in {1..30}; do
+                if curl --fail --silent http://localhost:8080/actuator/health; then
+                  echo
+                  echo "Rollback application is healthy!"
+                  ROLLBACK_HEALTHY=true
+                  break
+                fi
+
+                echo "Rollback health check failed. Retry $i/30..."
+                sleep 2
+              done
+
+              echo "======================================"
+              echo "Failed version logs:"
+              echo "======================================"
+
+              docker logs infraflow --tail 100
+
+              if [ "$ROLLBACK_HEALTHY" != "true" ]; then
+                echo "CRITICAL: Rollback also failed!"
+              else
+                echo "Rollback successful!"
+                echo "Restored version: ${OLD_TAG}"
+              fi
+
+              exit 1
+            fi
+
+            echo "======================================"
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "Running version: ${NEW_TAG}"
+            echo "======================================"
 
             docker ps
 
-            echo "Waiting for application to start..."
-            sleep 15
-
-            curl --fail http://localhost:8080/actuator/health
