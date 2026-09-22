@@ -152,7 +152,6 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/infraflow:${{ needs.build-image.outputs.image_tag }}
 
   # 6. TEST VPS SSH
-     # 6. DEPLOY TO VPS
   deploy:
     runs-on: ubuntu-latest
     needs: [build-image, push-image]
@@ -174,5 +173,8 @@ jobs:
             docker compose up -d
 
             docker ps
+
+            echo "Waiting for application to start..."
+            sleep 15
 
             curl --fail http://localhost:8080/actuator/health
