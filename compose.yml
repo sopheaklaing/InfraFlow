@@ -1,6 +1,7 @@
 services:
+
   app:
-    image: infraflow:1.0.1
+    image: ghcr.io/sopheaklaing/infraflow:${APP_TAG}
     container_name: infraflow
 
     ports:
@@ -25,3 +26,50 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  prometheus:
+    image: prom/prometheus:v3.8.1
+    container_name: infraflow-prometheus
+
+    ports:
+      - "9090:9090"
+
+    restart: unless-stopped
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: infraflow-grafana
+
+    ports:
+      - "3000:3000"
+
+    restart: unless-stopped
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: infraflow-node-exporter
+
+    restart: unless-stopped
+
+    pid: host
+
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host"
+
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro,rslave
+
+volumes:
+  prometheus-data:
+  grafana-data:
