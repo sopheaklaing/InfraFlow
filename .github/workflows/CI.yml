@@ -140,7 +140,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Tag image for GHCR
+      - name: Tag image for GHCR
         run: |
           docker tag \
             infraflow:${{ needs.build-image.outputs.image_tag }} \
