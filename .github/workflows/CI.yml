@@ -1,9 +1,8 @@
-
 name: CI/CD
 
 on:
   push:
-    branches: [main ,test/rollback]
+    branches: [main, test/rollback]
   workflow_dispatch:
 
 permissions:
@@ -213,6 +212,13 @@ jobs:
 
               echo "======================================"
               echo "DEPLOYMENT FAILED"
+              echo "Failed version: ${NEW_TAG}"
+              echo "======================================"
+
+              echo "Failed version logs:"
+              docker logs infraflow --tail 100 || true
+
+              echo "======================================"
               echo "Rolling back to ${OLD_TAG}..."
               echo "======================================"
 
@@ -235,18 +241,15 @@ jobs:
                 sleep 2
               done
 
-              echo "======================================"
-              echo "Failed version logs:"
-              echo "======================================"
-
-              docker logs infraflow --tail 100
-
               if [ "$ROLLBACK_HEALTHY" != "true" ]; then
                 echo "CRITICAL: Rollback also failed!"
-              else
-                echo "Rollback successful!"
-                echo "Restored version: ${OLD_TAG}"
+                exit 1
               fi
+
+              echo "======================================"
+              echo "ROLLBACK SUCCESSFUL"
+              echo "Restored version: ${OLD_TAG}"
+              echo "======================================"
 
               exit 1
             fi
@@ -257,4 +260,3 @@ jobs:
             echo "======================================"
 
             docker ps
-
