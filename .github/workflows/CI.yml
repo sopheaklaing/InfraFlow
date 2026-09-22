@@ -1,3 +1,4 @@
+
 name: CI/CD
 
 on:
@@ -10,6 +11,9 @@ permissions:
 
 jobs:
 
+  # ========================================
+  # 1. TEST
+  # ========================================
   test:
     runs-on: ubuntu-latest
 
@@ -28,6 +32,9 @@ jobs:
         run: ./mvnw test -B
 
 
+  # ========================================
+  # 2. SOURCE SECURITY SCAN
+  # ========================================
   security-scan-source:
     runs-on: ubuntu-latest
     needs: test
@@ -56,6 +63,9 @@ jobs:
           exit-code: "1"
 
 
+  # ========================================
+  # 3. BUILD DOCKER IMAGE
+  # ========================================
   build-image:
     runs-on: ubuntu-latest
     needs: security-scan-source
@@ -69,7 +79,8 @@ jobs:
 
       - name: Compute image tag
         id: meta
-        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
@@ -79,7 +90,8 @@ jobs:
 
       - name: Save Docker image
         run: |
-          docker save infraflow:${{ steps.meta.outputs.tag }} \
+          docker save \
+            infraflow:${{ steps.meta.outputs.tag }} \
             -o infraflow.tar
 
       - name: Upload Docker image
@@ -90,6 +102,9 @@ jobs:
           retention-days: 1
 
 
+  # ========================================
+  # 4. IMAGE SECURITY SCAN
+  # ========================================
   image-scan:
     runs-on: ubuntu-latest
     needs: build-image
@@ -102,12 +117,15 @@ jobs:
           path: .
 
       - name: Load Docker image
-        run: docker load -i infraflow.tar
+        run: |
+          docker load -i infraflow.tar
 
       - name: Verify Docker image
         run: |
           docker images
-          docker image inspect infraflow:${{ needs.build-image.outputs.image_tag }}
+
+          docker image inspect \
+            infraflow:${{ needs.build-image.outputs.image_tag }}
 
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@master
@@ -118,6 +136,9 @@ jobs:
           exit-code: "1"
 
 
+  # ========================================
+  # 5. PUSH IMAGE TO GHCR
+  # ========================================
   push-image:
     runs-on: ubuntu-latest
     needs: [build-image, image-scan]
@@ -134,7 +155,8 @@ jobs:
           path: .
 
       - name: Load Docker image
-        run: docker load -i infraflow.tar
+        run: |
+          docker load -i infraflow.tar
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -155,59 +177,113 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/infraflow:${{ needs.build-image.outputs.image_tag }}
 
 
+  # ========================================
+  # 6. DEPLOY TO VPS
+  # ========================================
   deploy:
     runs-on: ubuntu-latest
     needs: [build-image, push-image]
 
     steps:
+
+      # ----------------------------------------
+      # Checkout repository
+      # ----------------------------------------
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+
+      # ----------------------------------------
+      # Copy deployment files to VPS
+      # ----------------------------------------
+      - name: Copy deployment files to VPS
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.yml,monitoring"
+          target: "~/apps/infraflow"
+
+
+      # ----------------------------------------
+      # Deploy application
+      # ----------------------------------------
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+
           script: |
+
             cd ~/apps/infraflow
 
             NEW_TAG=${{ needs.build-image.outputs.image_tag }}
             IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/infraflow
 
             echo "======================================"
+            echo "InfraFlow Deployment"
             echo "New version: ${NEW_TAG}"
             echo "======================================"
 
+
+            # ----------------------------------------
             # Get currently running version
+            # ----------------------------------------
             OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' infraflow)
             OLD_TAG=${OLD_IMAGE##*:}
 
             echo "Current version: ${OLD_TAG}"
 
+
+            # ----------------------------------------
             # Pull new image
+            # ----------------------------------------
             echo "Pulling new image..."
+
             docker pull ${IMAGE_NAME}:${NEW_TAG}
 
-            # Deploy new version
-            echo "Deploying ${NEW_TAG}..."
-            export APP_TAG=${NEW_TAG}
-            docker compose up -d
 
+            # ----------------------------------------
+            # Deploy new version
+            # ----------------------------------------
+            echo "Deploying ${NEW_TAG}..."
+
+            export APP_TAG=${NEW_TAG}
+
+            docker compose -f docker-compose.yml up -d
+
+
+            # ----------------------------------------
+            # Health check
+            # ----------------------------------------
             echo "Waiting for application to become healthy..."
 
             HEALTHY=false
 
             for i in {1..30}; do
-              if curl --fail --silent http://localhost:8080/actuator/health; then
+
+              if curl --fail --silent \
+                http://localhost:8080/actuator/health; then
+
                 echo
                 echo "Application is healthy!"
+
                 HEALTHY=true
                 break
               fi
 
               echo "Health check failed. Retry $i/30..."
+
               sleep 2
             done
 
-            # New version failed → rollback
+
+            # ========================================
+            # FAILED DEPLOYMENT → ROLLBACK
+            # ========================================
             if [ "$HEALTHY" != "true" ]; then
 
               echo "======================================"
@@ -215,48 +291,92 @@ jobs:
               echo "Failed version: ${NEW_TAG}"
               echo "======================================"
 
+
+              # ----------------------------------------
+              # Show failed version logs
+              # ----------------------------------------
               echo "Failed version logs:"
+
               docker logs infraflow --tail 100 || true
 
+
+              # ----------------------------------------
+              # Rollback
+              # ----------------------------------------
               echo "======================================"
               echo "Rolling back to ${OLD_TAG}..."
               echo "======================================"
 
-              export APP_TAG=${OLD_TAG}
-              docker compose up -d
 
+              export APP_TAG=${OLD_TAG}
+
+              docker compose -f docker-compose.yml up -d
+
+
+              # ----------------------------------------
+              # Rollback health check
+              # ----------------------------------------
               echo "Waiting for rollback application..."
 
               ROLLBACK_HEALTHY=false
 
               for i in {1..30}; do
-                if curl --fail --silent http://localhost:8080/actuator/health; then
+
+                if curl --fail --silent \
+                  http://localhost:8080/actuator/health; then
+
                   echo
                   echo "Rollback application is healthy!"
+
                   ROLLBACK_HEALTHY=true
                   break
                 fi
 
                 echo "Rollback health check failed. Retry $i/30..."
+
                 sleep 2
               done
 
+
+              # ----------------------------------------
+              # Rollback failed
+              # ----------------------------------------
               if [ "$ROLLBACK_HEALTHY" != "true" ]; then
-                echo "CRITICAL: Rollback also failed!"
+
+                echo "======================================"
+                echo "CRITICAL: ROLLBACK FAILED"
+                echo "======================================"
+
                 exit 1
               fi
 
+
+              # ----------------------------------------
+              # Rollback successful
+              # ----------------------------------------
               echo "======================================"
               echo "ROLLBACK SUCCESSFUL"
               echo "Restored version: ${OLD_TAG}"
               echo "======================================"
 
+
+              # Keep GitHub Actions failed
               exit 1
             fi
 
+
+            # ========================================
+            # DEPLOYMENT SUCCESS
+            # ========================================
             echo "======================================"
             echo "DEPLOYMENT SUCCESSFUL"
             echo "Running version: ${NEW_TAG}"
             echo "======================================"
+
+
+            # ----------------------------------------
+            # Show running containers
+            # ----------------------------------------
+            echo "Running containers:"
 
             docker ps
