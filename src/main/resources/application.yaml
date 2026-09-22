@@ -2,3 +2,16 @@ spring:
   application:
     name: infraflow
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+  endpoint:
+    health:
+      show-details: always
+
+  metrics:
+    tags:
+      application: infraflow
